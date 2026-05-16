@@ -18,7 +18,8 @@ class Product extends Model
         'price_cost', // Tambahin ini
         'price_sell', // Tambahin ini
         'status_jual',// Tambahin ini
-        'image'
+        'image',
+        'keterangan',
     ];
 
     public function outbounds()
