@@ -13,7 +13,7 @@
 <div class="container-fluid p-0">
     <div class="mb-4 text-start">
         <h1 class="fw-bold text-white display-6" style="letter-spacing: -1.5px;">
-            Manajemen Pengiriman <span class="fw-light text-muted">| Barang Keluar</span>
+        <span class="fw-light text-muted">Manajemen Pengiriman | Barang Keluar</span>
         </h1>
     </div>
 
@@ -34,7 +34,6 @@
             <button class="btn btn-primary fw-bold px-4" data-bs-toggle="modal" data-bs-target="#modalKeluar">
                 <i class="fas fa-plus-circle me-2"></i>Input Pesanan Baru
             </button>
-            <span class="text-muted small"><i class="fas fa-barcode me-1"></i> Scanner Active...</span>
         </div>
         <div class="card-body p-0">
             <div class="table-responsive">
@@ -57,7 +56,6 @@
                             <td class="ps-4 text-muted small">{{ $data->created_at->format('d/m/Y H:i') }}</td>
                             <td>
                                 <div class="fw-bold">{{ $data->category }}</div>
-                                <div class="small text-muted">{{ $data->brand ?? 'No Brand' }}</div>
                             </td>
                             <td><code class="text-primary fw-bold">{{ $data->sku }}</code></td>
                             <td>
@@ -120,7 +118,9 @@
     <div class="modal-dialog modal-sm modal-dialog-centered">
         <div class="modal-content bg-white text-center p-4 shadow-lg border-0 text-dark">
             <h6 class="fw-bold mb-3" id="zoomTitle"></h6>
-            <div id="barcodeArea" class="mb-3 d-flex justify-content-center"></div>
+            <div id="barcodeArea" class="mb-3 d-flex justify-content-center overflow-hidden">
+                <svg id="barcodeDisplay"></svg>
+            </div>
             <h5 class="fw-bold text-primary" id="zoomCodeText"></h5>
             <button type="button" class="btn btn-secondary btn-sm mt-3 w-100" data-bs-dismiss="modal">Tutup</button>
         </div>
@@ -138,40 +138,58 @@
                 @csrf
                 <div class="modal-body p-4">
                     <div class="mb-3">
-                        <label class="small fw-bold mb-1">Cari Nama Item</label>
-                        <input type="text" name="category" class="form-control" placeholder="Contoh: Sepatu Safety" required>
+                        <label class="small fw-bold mb-1">Pilih Produk / Barang *</label>
+                        <select name="product_select" id="product_select" class="form-select" required onchange="updateProductDetails()">
+                            <option value="">-- Pilih Produk dari Stok Gudang --</option>
+                            @foreach($products as $p)
+                                <option value="{{ $p->id }}" 
+                                        data-sku="{{ $p->sku }}" 
+                                        data-barcode="{{ $p->barcode }}" 
+                                        data-name="{{ $p->category }}"
+                                        data-stock="{{ $p->stock }}">
+                                    {{ $p->category }} [Merek: {{ $p->brand ?? '-' }}] - Sisa Stok: ({{ number_format($p->stock, 0) }})
+                                </option>
+                            @endforeach
+                        </select>
+                    </div>
+
+                    <input type="hidden" name="category" id="hidden_category">
+                    <input type="hidden" name="sku" id="hidden_sku">
+                    <input type="hidden" name="barcode" id="hidden_barcode">
+
+                    <div class="row">
+                        <div class="col-6 mb-3">
+                            <label class="small fw-bold mb-1 text-muted">Kode SKU (Otomatis)</label>
+                            <input type="text" id="display_sku" class="form-control bg-light" placeholder="Terisi Otomatis" readonly disabled>
+                        </div>
+                        <div class="col-6 mb-3">
+                            <label class="small fw-bold mb-1 text-muted">Barcode (Otomatis)</label>
+                            <input type="text" id="display_barcode" class="form-control bg-light" placeholder="Terisi Otomatis" readonly disabled>
+                        </div>
                     </div>
                     <div class="row">
                         <div class="col-6 mb-3">
-                            <label class="small fw-bold mb-1">Kode SKU</label>
-                            <input type="text" name="sku" class="form-control" placeholder="SKU-01" required>
+                            <label class="small fw-bold mb-1">Qty (Jumlah Keluar) *</label>
+                            <input type="number" name="jumlah" id="input_jumlah" class="form-control" min="1" placeholder="0" required oninput="validateMaxStock()">
+                            <small id="stock_warning" class="text-danger small d-none">Jumlah keluar melebihi stok!</small>
                         </div>
                         <div class="col-6 mb-3">
-                            <label class="small fw-bold mb-1 text-danger">Barcode</label>
-                            <input type="text" name="barcode" class="form-control" placeholder="Ketik/Scan" required>
-                        </div>
-                    </div>
-                    <div class="row">
-                        <div class="col-6 mb-3">
-                            <label class="small fw-bold mb-1">Qty</label>
-                            <input type="number" name="jumlah" class="form-control" required>
-                        </div>
-                        <div class="col-6 mb-3">
-                            <label class="small fw-bold mb-1">Ekspedisi</label>
-                            <select name="ekspedisi" class="form-select">
+                            <label class="small fw-bold mb-1">Ekspedisi *</label>
+                            <select name="ekspedisi" class="form-select" required>
                                 <option value="J&T">J&T</option>
                                 <option value="GoSend">GoSend</option>
                                 <option value="SPX">SPX</option>
+                                <option value="NinjaVan">NinjaVan</option>
                             </select>
                         </div>
                     </div>
                     <div class="mb-0">
-                        <label class="small fw-bold mb-1">Nama Penerima</label>
-                        <input type="text" name="penerima" class="form-control" required>
+                        <label class="small fw-bold mb-1">Nama Penerima *</label>
+                        <input type="text" name="penerima" class="form-control" placeholder="Masukkan nama pembeli" required>
                     </div>
                 </div>
                 <div class="modal-footer bg-light">
-                    <button type="submit" class="btn btn-primary w-100 fw-bold">Simpan Pesanan</button>
+                    <button type="submit" id="btn_submit_pesanan" class="btn btn-primary w-100 fw-bold">Simpan Pesanan</button>
                 </div>
             </form>
         </div>
@@ -179,17 +197,95 @@
 </div>
 
 <script>
-    // Scanner focus otomatis
-    document.addEventListener('click', () => document.getElementById('barcodeScanner').focus());
+    // 1. SCANNER FOCUS DENGAN PENGAMAN MODAL
+    document.addEventListener('click', function(e) {
+        const modalKeluar = document.getElementById('modalKeluar');
+        const modalBarcodeZoom = document.getElementById('modalBarcodeZoom');
+        
+        if ((modalKeluar && modalKeluar.classList.contains('show')) || 
+            (modalBarcodeZoom && modalBarcodeZoom.classList.contains('show'))) {
+            return; 
+        }
+        
+        document.getElementById('barcodeScanner').focus();
+    });
 
+    document.getElementById('modalKeluar').addEventListener('hidden.bs.modal', function () {
+        document.getElementById('barcodeScanner').focus();
+    });
+    document.getElementById('modalBarcodeZoom').addEventListener('hidden.bs.modal', function () {
+        document.getElementById('barcodeScanner').focus();
+    });
+
+    // 2. FUNGSI DROPDOWN OTOMATIS
+    function updateProductDetails() {
+        const select = document.getElementById('product_select');
+        const selectedOption = select.options[select.selectedIndex];
+
+        if (selectedOption && selectedOption.value !== "") {
+            const sku = selectedOption.getAttribute('data-sku');
+            const barcode = selectedOption.getAttribute('data-barcode');
+            const name = selectedOption.getAttribute('data-name');
+            const stock = selectedOption.getAttribute('data-stock');
+
+            document.getElementById('display_sku').value = sku;
+            document.getElementById('display_barcode').value = barcode;
+            
+            document.getElementById('hidden_sku').value = sku;
+            document.getElementById('hidden_barcode').value = barcode;
+            document.getElementById('hidden_category').value = name;
+
+            document.getElementById('input_jumlah').setAttribute('max', stock);
+        } else {
+            document.getElementById('display_sku').value = "";
+            document.getElementById('display_barcode').value = "";
+            document.getElementById('hidden_sku').value = "";
+            document.getElementById('hidden_barcode').value = "";
+            document.getElementById('hidden_category').value = "";
+            document.getElementById('input_jumlah').removeAttribute('max');
+        }
+        validateMaxStock();
+    }
+    
+    // Validasi input Qty vs Stok Asli
+    function validateMaxStock() {
+        const select = document.getElementById('product_select');
+        const selectedOption = select.options[select.selectedIndex];
+        const inputJumlah = document.getElementById('input_jumlah');
+        const warning = document.getElementById('stock_warning');
+        const btnSubmit = document.getElementById('btn_submit_pesanan');
+
+        if (selectedOption && selectedOption.value !== "") {
+            const currentStock = parseInt(selectedOption.getAttribute('data-stock'));
+            const inputStock = parseInt(inputJumlah.value) || 0;
+
+            if (inputStock > currentStock) {
+                warning.classList.remove('d-none');
+                btnSubmit.setAttribute('disabled', true);
+            } else {
+                warning.classList.add('d-none');
+                btnSubmit.removeAttribute('disabled');
+            }
+        }
+    }
+
+    // 3. POPUP ZOOM BARCODE
     function showBarcode(code, name) {
         document.getElementById('zoomTitle').innerText = name;
         document.getElementById('zoomCodeText').innerText = code;
-        document.getElementById('barcodeArea').innerHTML = `<svg id="barcodeDisplay"></svg>`;
-        JsBarcode("#barcodeDisplay", code, { width: 2.5, height: 80, displayValue: false });
-        new bootstrap.Modal(document.getElementById('modalBarcodeZoom')).show();
+        
+        JsBarcode("#barcodeDisplay", code, { 
+            format: "CODE128",
+            width: 2.5, 
+            height: 70, 
+            displayValue: false 
+        });
+        
+        var myModal = new bootstrap.Modal(document.getElementById('modalBarcodeZoom'));
+        myModal.show();
     }
 
+    // 4. LOGIKA SWEETALERT UPDATE STATUS SCAN & TOMBOL
     function manualUpdate(code) {
         Swal.fire({
             title: 'Proses Pesanan?',
@@ -223,6 +319,7 @@
         }).then((result) => { if (result.isConfirmed) document.getElementById('form-delete-' + id).submit(); })
     }
 
+    // 5. KIRIM AJAX REQUEST KE BACKEND
     function sendRequest(code, actionType) {
         fetch("{{ route('barcode.scan') }}", {
             method: "POST",
@@ -239,6 +336,7 @@
         });
     }
 
+    // Listener otomatis scanner enter fisik
     document.getElementById('barcodeScanner').addEventListener('keypress', function(e) {
         if (e.key === 'Enter') {
             sendRequest(this.value, 'update');
@@ -247,3 +345,15 @@
     });
 </script>
 @endsection
+
+@if(session('success'))
+<script>
+    Swal.fire({ icon: 'success', title: 'Berhasil!', text: "{{ session('success') }}", timer: 3000, showConfirmButton: false });
+</script>
+@endif
+
+@if(session('error'))
+<script>
+    Swal.fire({ icon: 'error', title: 'Opps, Gagal!', text: "{{ session('error') }}" });
+</script>
+@endif

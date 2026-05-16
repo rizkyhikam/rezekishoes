@@ -9,7 +9,7 @@ class Outbound extends Model
 {
     use HasFactory;
 
-    protected $fillable = [
-        'category', 'sku', 'jumlah', 'penerima', 'ekspedisi', 'status', 'image'
+protected $fillable = [
+        'category', 'sku', 'barcode', 'jumlah', 'penerima', 'ekspedisi', 'status', 'user_id'
     ];
 }

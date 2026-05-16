@@ -24,15 +24,20 @@ class InventoryController extends Controller
         }
         
         $outbounds = $query->latest()->get();
-        return view('inventory.keluar', compact('outbounds', 'status'));
+        
+        // AMBIL JUGA DATA PRODUK BUAT DROPDOWN DI MODAL
+        $products = Product::where('stock', '>', 0)->orderBy('category', 'asc')->get();
+        
+        // Kirim variabel $products ke view
+        return view('inventory.keluar', compact('outbounds', 'status', 'products'));
     }
 
     // 3. HALAMAN ANALITIK
-    public function analitik() {
+public function analitik() {
         $summary = [
-            'cetak'  => Outbound::where('status', 'Dikirim')->count(), 
-            'proses' => Outbound::where('status', 'Perlu Dikirim')->count(),
-            'cancel' => Outbound::where('status', 'Dibatalkan')->count(),
+            'proses' => Outbound::where('status', 'Perlu Dikirim')->count(), // IN (Sedang diproses)
+            'cetak'  => Outbound::where('status', 'Selesai')->count(),       // OUT (Selesai Kirim)
+            'cancel' => Outbound::where('status', 'Dibatalkan')->count(),   // CANCEL (Gagal/Batal)
         ];
 
         $kurirs = ['GoSend', 'J&T', 'SPX', 'NinjaVan'];
@@ -41,7 +46,7 @@ class InventoryController extends Controller
         foreach ($kurirs as $k) {
             $detail[$k] = [
                 'in'     => Outbound::where('ekspedisi', $k)->where('status', 'Perlu Dikirim')->count(),
-                'out'    => Outbound::where('ekspedisi', $k)->where('status', 'Dikirim')->count(),
+                'out'    => Outbound::where('ekspedisi', $k)->where('status', 'Selesai')->count(),
                 'cancel' => Outbound::where('ekspedisi', $k)->where('status', 'Dibatalkan')->count(),
             ];
         }
@@ -100,53 +105,78 @@ class InventoryController extends Controller
     }
 
     // 7. SIMPAN PESANAN BARANG KELUAR
-    public function storeOutbound(Request $request) {
+public function storeOutbound(Request $request) {
         $request->validate([
             'barcode'   => 'required',
-            'jumlah'    => 'required|integer',
+            'jumlah'    => 'required|integer|min:1',
             'penerima'  => 'required',
             'ekspedisi' => 'required',
         ]);
 
+        // Cari produk berdasarkan barcode di gudang
+        $product = Product::where('barcode', $request->barcode)->first();
+
+        // VALIDASI 1: Cek apakah barangnya beneran ada di gudang
+        if (!$product) {
+            return redirect()->back()->with('error', 'Gagal! Produk dengan barcode tersebut tidak ditemukan di gudang.');
+        }
+
+        // VALIDASI 2: Cek apakah stok di gudang mencukupi, biar GA MINUS!
+        if ($product->stock < $request->jumlah) {
+            return redirect()->back()->with('error', 'Gagal! Stok tidak mencukupi. Sisa stok ' . $product->stock . ' ' . $product->unit);
+        }
+
+        // Jika lolos validasi, potong stok produk di gudang
+        $product->decrement('stock', $request->jumlah);
+
+        // Catat data ke tabel outbounds
         Outbound::create([
-            'category'  => $request->category,
-            'brand'     => $request->brand,
+            'category'  => $request->category, 
             'sku'       => $request->sku,
             'barcode'   => $request->barcode,
             'jumlah'    => $request->jumlah,
             'penerima'  => $request->penerima,
             'ekspedisi' => $request->ekspedisi,
             'status'    => 'Perlu Dikirim',
+            'user_id'   => auth()->id() ?? 1, 
         ]);
 
-        return redirect()->back()->with('success', 'Pesanan baru berhasil dicatat!');
+        return redirect()->back()->with('success', 'Pesanan baru berhasil dicatat dan stok otomatis dipotong!');
     }
 
     // 8. SCANNER LOGIC
-    public function scanStatus(Request $request) {
+public function scanStatus(Request $request) {
         $data = Outbound::where('barcode', $request->barcode)->first();
 
         if (!$data) {
             return response()->json(['success' => false, 'message' => 'Barcode tidak ditemukan!'], 404);
         }
 
+        // Logika kalau pesanan DIBATALKAN via scan/tombol
         if ($request->action == 'cancel') {
+            // Balikin lagi stoknya ke gudang karena gajadi dikirim
+            $product = Product::where('barcode', $data->barcode)->first();
+            if ($product) {
+                $product->increment('stock', $data->jumlah);
+            }
+
             $data->status = 'Dibatalkan';
             $data->save();
-            return response()->json(['success' => true, 'message' => 'Pesanan berhasil dibatalkan.']);
+            return response()->json(['success' => true, 'message' => 'Pesanan berhasil dibatalkan dan stok dikembalikan.']);
         }
 
+        // Logika naik status otomatis pas di-scan
         if ($data->status == 'Perlu Dikirim') {
             $data->status = 'Dikirim';
         } elseif ($data->status == 'Dikirim') {
-            $data->status = 'Selesai';
+            $data->status = 'Selesai'; // Status 'Selesai' ini yang dibaca di dashboard analitik OUT
         }
 
         $data->save();
         return response()->json(['success' => true, 'message' => 'Status sekarang: ' . $data->status]);
     }
 
-    // 9. IMPORT CSV MULTI-FORMAT (FIX SINKRON KOLOM EXCEL CLIENT)
+    // 9. IMPORT CSV DENGAN AUTOMATIC HEADER MAPPING (ANTI-OBRAK-ABRIK KOLOM)
     public function importExcel(Request $request) 
     {
         $request->validate(['file' => 'required|mimes:csv,txt']);
@@ -161,81 +191,93 @@ class InventoryController extends Controller
 
         $handle = fopen($file->path(), 'r');
         
-        $globalJenis = 'SPT';
-        $globalTipe  = 'INV';
-        $globalHPP   = 'FIFO';
-        $globalMin   = 0;
+        // 1. Ambil baris pertama sebagai Header untuk dipetakan posisinya
+        $header = fgetcsv($handle, 1000, $separator);
+        if (!$header) {
+            fclose($handle);
+            return redirect()->back()->with('error', 'File CSV kosong atau rusak!');
+        }
 
-        $rows = [];
+        // Bersihkan spasi gaib di nama header dan ubah jadi lowercase biar gampang dicocokin
+        $headerMap = array_map(function($title) {
+            return strtolower(trim($title));
+        }, $header);
+
+        // Cari tahu nama kolom ini ada di indeks nomor berapa saja di Excel secara dinamis
+        $keySku        = array_search('sku', $headerMap) !== false ? array_search('sku', $headerMap) : array_search('kode item', $headerMap);
+        $keyBarcode    = array_search('barcode', $headerMap);
+        $keyName       = array_search('nama barang', $headerMap) !== false ? array_search('nama barang', $headerMap) : array_search('nama item', $headerMap);
+        $keyStock      = array_search('stok', $headerMap) !== false ? array_search('stok', $headerMap) : array_search('stock', $headerMap);
+        $keyUnit       = array_search('satuan', $headerMap) !== false ? array_search('satuan', $headerMap) : array_search('unit', $headerMap);
+        $keyRack       = array_search('rak', $headerMap) !== false ? array_search('rak', $headerMap) : array_search('rack', $headerMap);
+        $keyBrand      = array_search('merek', $headerMap) !== false ? array_search('merek', $headerMap) : array_search('brand', $headerMap);
+        $keyPriceSell  = array_search('harga jual', $headerMap);
+        $keyPriceCost  = array_search('harga pokok', $headerMap);
+        $keyStatusJual = array_search('status jual', $headerMap);
+        $keyKeterangan = array_search('keterangan', $headerMap);
+
+        // Validasi minimal: Kolom kunci wajib ada, kalau nggak ada langsung tolak biar ga crash
+        if ($keySku === false || $keyBarcode === false || $keyName === false) {
+            fclose($handle);
+            return redirect()->back()->with('error', 'Format judul header Excel salah atau kolom penting (SKU/Barcode/Nama Barang) tidak ditemukan!');
+        }
+
+        // 2. Looping membaca baris data di bawah header
         while (($row = fgetcsv($handle, 1000, $separator)) !== FALSE) {
-            $rows[] = $row;
-        }
-        fclose($handle);
-
-        // Langkah 1: Berburu data kecil yang ada di baris-baris atas
-        foreach ($rows as $r) {
-            if (isset($r[7]) && trim($r[7]) == 'Jenis' && isset($r[11]) && trim($r[11]) == 'Tipe Item') {
-                continue; 
-            }
-            if (isset($r[11]) && trim($r[11]) == 'INV') {
-                $globalJenis = trim($r[7]) ?? 'SPT';
-                $globalTipe  = trim($r[11]) ?? 'INV';
-                $globalHPP   = isset($r[12]) ? trim($r[12]) : 'FIFO';
-                $globalMin   = isset($r[13]) ? (int)trim($r[13]) : 0;
-            }
-        }
-
-        // Langkah 2: Proses data tabel utama sepatu di bawah (SINKRON KOLOM)
-        foreach ($rows as $r) {
-            if (empty($r[0]) || trim($r[0]) == 'Kode Item' || count($r) < 5 || trim($r[0]) == 'Jenis') {
-                continue; 
+            // Pengaman kalau baris kosong, skip
+            if (empty($row) || !isset($row[$keySku]) || empty(trim($row[$keySku]))) {
+                continue;
             }
 
-            // Stok ada di Kolom E ($r[4])
-            $cleanStock = isset($r[4]) ? (int) preg_replace('/[^\d]/', '', explode('.', explode(',', $r[4])[0])[0]) : 0;
-            if (!is_numeric($cleanStock)) {
-                $cleanStock = 0;
-            }
+            // --- PROSES AMBIL DATA BERDASARKAN INDEKS DINAMIS ---
+            
+            // Ambil data stok (Gunakan indeks dinamis hasil mapping tadi)
+            $rawStock = $keyStock !== false && isset($row[$keyStock]) ? $row[$keyStock] : '0';
+            $cleanStock = (int) preg_replace('/[^\d]/', '', explode('.', explode(',', $rawStock)[0])[0]);
 
-            // Harga Jual ada di Kolom H ($r[7])
-            $sellRaw = isset($r[7]) ? trim($r[7]) : '0';
-            if (strpos($sellRaw, '.') !== false && strpos($sellRaw, ',') === false && substr($sellRaw, -3) !== '.00') {
-                $sellRaw = str_replace('.', '', $sellRaw);
+            // Ambil data harga jual
+            $rawSell = $keyPriceSell !== false && isset($row[$keyPriceSell]) ? trim($row[$keyPriceSell]) : '0';
+            if (strpos($rawSell, '.') !== false && strpos($rawSell, ',') === false && substr($rawSell, -3) !== '.00') {
+                $rawSell = str_replace('.', '', $rawSell);
             }
-            $cleanSell = (float) preg_replace('/[^\d]/', '', explode('.', explode(',', $sellRaw)[0])[0]);
+            $cleanSell = (float) preg_replace('/[^\d]/', '', explode('.', explode(',', $rawSell)[0])[0]);
 
-            // Harga Pokok ada di Kolom I ($r[8])
-            $costRaw = isset($r[8]) ? trim($r[8]) : '0';
-            if (strpos($costRaw, '.') !== false && strpos($costRaw, ',') === false && substr($costRaw, -3) !== '.00') {
-                $costRaw = str_replace('.', '', $costRaw);
+            // Ambil data harga pokok
+            $rawCost = $keyPriceCost !== false && isset($row[$keyPriceCost]) ? trim($row[$keyPriceCost]) : '0';
+            if (strpos($rawCost, '.') !== false && strpos($rawCost, ',') === false && substr($rawCost, -3) !== '.00') {
+                $rawCost = str_replace('.', '', $rawCost);
             }
-            $cleanCost = (float) preg_replace('/[^\d]/', '', explode('.', explode(',', $costRaw)[0])[0]);
+            $cleanCost = (float) preg_replace('/[^\d]/', '', explode('.', explode(',', $rawCost)[0])[0]);
 
-            // Simpan ke Database
+            // Eksekusi Save / Update ke database MySQL
             Product::updateOrCreate(
-                ['barcode' => trim($r[1])], // Barcode (Kolom B)
+                ['barcode' => trim($row[$keyBarcode])], 
                 [
-                    'sku'         => trim($r[0]),  // Kode Item / SKU (Kolom A)
-                    'category'    => trim($r[3]),  // Kategori (Kolom D)
-                    'stock'       => $cleanStock,  // Stok Bersih
-                    'unit'        => 'PSG',        // Default Satuan (atau sesuaikan kebutuhan)
-                    'rack'        => trim($r[5]) ?? '-',   // Rak (Kolom F)
-                    'brand'       => trim($r[6]) ?? '-',   // Merek / Brand (Kolom G)
-                    'price_cost'  => $cleanCost,   // Harga Pokok Bersih
-                    'price_sell'  => $cleanSell,   // Harga Jual Bersih
-                    'status_jual' => trim($r[9]) ?? 'Masih Dijual', // Status Jual (Kolom J)
-                    'keterangan'  => trim($r[10]) ?? '-', // Keterangan (Kolom K)
+                    'sku'         => trim($row[$keySku]),
                     
-                    // Kolom metadata dari atas Excel
-                    'jenis'       => $globalJenis,
-                    'tipe_item'   => $globalTipe,
-                    'system_hpp'  => $globalHPP,
-                    'stok_min'    => $globalMin,
+                    // Supaya sinkron sama {{ $p->category }} di blade lo yang nampilin Nama Sepatu
+                    'category'    => trim($row[$keyName]),  
+                    
+                    'stock'       => $cleanStock,
+                    'unit'        => $keyUnit !== false && isset($row[$keyUnit]) ? trim($row[$keyUnit]) : 'PSG',
+                    'rack'        => $keyRack !== false && isset($row[$keyRack]) ? trim($row[$keyRack]) : '-',
+                    'brand'       => $keyBrand !== false && isset($row[$keyBrand]) ? trim($row[$keyBrand]) : '-',
+                    'price_cost'  => $cleanCost,
+                    'price_sell'  => $cleanSell,
+                    'status_jual' => $keyStatusJual !== false && isset($row[$keyStatusJual]) ? trim($row[$keyStatusJual]) : 'Masih Dijual',
+                    'keterangan'  => $keyKeterangan !== false && isset($row[$keyKeterangan]) ? trim($row[$keyKeterangan]) : '-',
+                    
+                    // Kolom default/bawaan database iPos lo biar ga error kekosongan
+                    'jenis'       => 'SPT',
+                    'tipe_item'   => 'INV',
+                    'system_hpp'  => 'FIFO',
+                    'stok_min'    => 0,
                 ]
             );
         }
+        fclose($handle);
 
-        return redirect()->back()->with('success', 'Master Data Berhasil Disinkronkan!');
+        return redirect()->back()->with('success', 'Master Data Berhasil Disinkronkan Otomatis Berdasarkan Judul Kolom!');
     }
 
     // 10. HAPUS DATA BARANG KELUAR

@@ -64,19 +64,21 @@
                             <td class="fw-bold text-primary">{{ $p->sku }}</td>
                             <td class="fw-mono text-muted">{{ $p->barcode ?? '-' }}</td>
                             <td class="fw-semibold" style="max-width: 250px; overflow: hidden; text-overflow: ellipsis;">{{ $p->category }}</td>
-                            <td class="fw-bold text-dark">{{ number_format($p->stock, 2) }}</td>
+                            <td class="fw-bold text-dark">{{ number_format($p->stock, 0, ',', '.') }}</td>
                             <td><span class="badge bg-light text-dark border">{{ $p->unit ?? 'PSG' }}</span></td>
                             <td>{{ $p->rack ?? '-' }}</td>
                             <td>SPT</td> <td>{{ $p->brand ?? '-' }}</td>
                             <td>Rp{{ number_format($p->price_cost, 0, ',', '.') }}</td>
                             <td class="fw-bold text-success">Rp{{ number_format($p->price_sell, 0, ',', '.') }}</td>
-                            <td>INV</td> <td>FIFO</td> <td>0,00</td>
+                            <td>INV</td> <td>FIFO</td> 
+
+                            <td>{{ number_format($p->stok_min ?? 0, 0, ',', '.') }}</td>
                             <td>
                                 <span class="badge rounded-pill {{ $p->status_jual == 'Masih Dijual' ? 'bg-success-subtle text-success' : 'bg-secondary-subtle text-secondary' }}">
                                     {{ $p->status_jual ?? 'Masih Dijual' }}
                                 </span>
                             </td>
-                            <td class="text-muted small">-</td>
+                            <td class="text-muted small">{{ $p->keterangan ?? '-' }}</td>
                             <td class="text-center pe-4">
                                 <div class="btn-group shadow-sm rounded-pill border overflow-hidden">
                                     <button type="button" class="btn btn-sm btn-white text-primary border-0" onclick='openEditModal({!! json_encode($p) !!})'>
