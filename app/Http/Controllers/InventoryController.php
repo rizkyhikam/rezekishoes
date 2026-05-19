@@ -99,9 +99,16 @@ public function analitik() {
     }
 
     // 6. HAPUS MASTER DATA
-    public function destroy($id) {
-        Product::findOrFail($id)->delete();
-        return back()->with('success', 'Barang berhasil dihapus dari sistem!');
+public function destroy($id) {
+        $product = Product::findOrFail($id);
+
+        // Hapus dulu semua riwayat barang keluar yang numpang pake barcode ini biar MySQL ga ngamuk
+        Outbound::where('barcode', $product->barcode)->delete();
+
+        // Baru deh hapus master produknya dengan aman sentosa
+        $product->delete();
+
+        return back()->with('success', 'Barang dan seluruh riwayat pengirimannya berhasil dihapus dari sistem!');
     }
 
     // 7. SIMPAN PESANAN BARANG KELUAR
